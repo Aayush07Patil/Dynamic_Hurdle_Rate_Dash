@@ -292,4 +292,4 @@ def update_output(n_intervals):
 
 # For local development
 if __name__ == '__main__':
-    app.run_server(debug=False, host='0.0.0.0',port=int(os.environ.get('PORT',8051))
+    app.run_server(debug=False, host='0.0.0.0',port=int(os.environ.get('PORT',8050))
