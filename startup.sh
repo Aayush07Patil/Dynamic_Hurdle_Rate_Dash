@@ -1,25 +1,25 @@
 #!/bin/bash
 
-# This script will be executed before the app starts
-# It installs the ODBC drivers needed for connecting to SQL Server
+# Install ODBC Driver for Azure Web App Linux
+# This script will run during startup
 
-# Update package repositories
+# Update package listings
 apt-get update
 
 # Install required dependencies
-apt-get install -y curl gnupg2 unixodbc unixodbc-dev
+apt-get install -y unixodbc unixodbc-dev gnupg2 curl
 
-# Add Microsoft repository key
+# Add Microsoft repository keys
 curl https://packages.microsoft.com/keys/microsoft.asc | apt-key add -
 
 # Add Microsoft repository
 curl https://packages.microsoft.com/config/debian/10/prod.list > /etc/apt/sources.list.d/mssql-release.list
 
-# Update repositories again after adding Microsoft repository
+# Update package listings again
 apt-get update
 
-# Install ODBC Drivers accepting the EULA
-ACCEPT_EULA=Y apt-get install -y msodbcsql17 msodbcsql18
+# Install ODBC Driver 17 for SQL Server (accepting EULA)
+ACCEPT_EULA=Y apt-get install -y msodbcsql17
 
-# Verify ODBC installation
+# Verify installation
 odbcinst -j
