@@ -16,7 +16,12 @@ except ImportError:
     pyodbc = None
 
 # Initialize the Dash app
-app = dash.Dash(__name__, title="Airline Dynamic Hurdle Rate Dashboard", suppress_callback_exceptions=True)
+app = dash.Dash(__name__, 
+                title="Airline Dynamic Hurdle Rate Dashboard", 
+                suppress_callback_exceptions=True,
+                # Add meta viewport tag for better responsiveness
+                meta_tags=[{"name": "viewport", "content": "width=device-width, initial-scale=1.0"}]
+               )
 server = app.server  # Expose Flask server to add custom routes
 
 # Global variables to store the last received data
@@ -28,13 +33,73 @@ current_flight_data = {
     "product_type": ""
 }
 
-# Layout - removed input fields, added display fields for received data
+# Custom CSS for better iframe fitting
+app.index_string = '''
+<!DOCTYPE html>
+<html>
+    <head>
+        {%metas%}
+        <title>{%title%}</title>
+        {%favicon%}
+        {%css%}
+        <style>
+            body, html {
+                margin: 0;
+                padding: 0;
+                width: 100%;
+                height: 100%;
+                overflow: hidden;
+            }
+            #react-entry-point {
+                width: 100%;
+                height: 100%;
+            }
+            .dash-wrapper {
+                width: 100%;
+                height: 100vh;
+                display: flex;
+                flex-direction: column;
+            }
+            .graph-container {
+                flex: 1;
+                min-height: 0;
+                display: flex;
+                flex-direction: column;
+            }
+            #dynamic-hurdle-graph {
+                flex: 1;
+                width: 100%;
+                height: 100%;
+            }
+        </style>
+    </head>
+    <body>
+        {%app_entry%}
+        <footer>
+            {%config%}
+            {%scripts%}
+            {%renderer%}
+        </footer>
+    </body>
+</html>
+'''
+
+# Modified layout with responsive containers
 app.layout = html.Div([
     dcc.Loading(id="loading-output", type="circle", children=[
         html.Div([
-            html.H3("Dynamic Hurdle Rate", style={"textAlign": "center"}),
-            dcc.Graph(id="dynamic-hurdle-graph"),
-        ])
+            html.H3("Dynamic Hurdle Rate", style={"textAlign": "center", "margin": "10px 0"}),
+            html.Div([
+                dcc.Graph(
+                    id="dynamic-hurdle-graph",
+                    config={
+                        'displayModeBar': False,  # Hide the mode bar for cleaner look
+                        'responsive': True         # Make the graph responsive
+                    },
+                    style={"height": "100%", "width": "100%"}
+                ),
+            ], className="graph-container")
+        ], className="dash-wrapper")
     ]),
     
     # Hidden div to store the flight data from the .NET application
@@ -202,7 +267,10 @@ def update_output(n_intervals):
         empty_fig.update_layout(
             xaxis={"visible": False},
             yaxis={"visible": False},
-            annotations=[{"text": "Waiting for flight data...", "showarrow": False, "font": {"size": 16}}]
+            annotations=[{"text": "Waiting for flight data...", "showarrow": False, "font": {"size": 16}}],
+            margin=dict(t=10, b=10, l=10, r=10),  # Reduced margins
+            height=400,  # Set a reasonable height
+            autosize=True  # Make sure it autosizes
         )
         return empty_fig
 
@@ -213,7 +281,10 @@ def update_output(n_intervals):
         empty_fig.update_layout(
             xaxis={"visible": False},
             yaxis={"visible": False},
-            annotations=[{"text": "No dynamic hurdle rate data found for the given parameters.", "showarrow": False, "font": {"size": 16}}]
+            annotations=[{"text": "No dynamic hurdle rate data found for the given parameters.", "showarrow": False, "font": {"size": 16}}],
+            margin=dict(t=10, b=10, l=10, r=10),  # Reduced margins
+            height=400,  # Set a reasonable height
+            autosize=True  # Make sure it autosizes
         )
         return empty_fig
 
@@ -279,14 +350,21 @@ def update_output(n_intervals):
                 yaxis=dict(range=[0, max(max_dynamic_rate, static_rate or 0, max_actual_rate or 0) * 1.1])
             )
 
-    # Update layout
+    # Update layout with smaller margins and better responsiveness
     fig.update_layout(
+        title= "Dynamic Hurdle Rate"
         xaxis_title="Dates",
         yaxis_title="Rate (₹)",
         hovermode="x unified",
-        margin=dict(t=30, b=50, l=50, r=50),
+        margin=dict(t=10, b=30, l=40, r=30),  # Reduced margins
+        autosize=True,  # Enable autosize for responsive behavior
+        height=400,     # Default height which will be overridden by CSS
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
+    
+    # Make the axis title fonts smaller for better fit
+    fig.update_xaxes(title_font=dict(size=10))
+    fig.update_yaxes(title_font=dict(size=10))
 
     return fig
 
