@@ -43,7 +43,7 @@ app.layout = html.Div([
     # Add interval component to trigger updates
     dcc.Interval(
         id='interval-component',
-        interval=180000,  # in milliseconds (3 minutes)
+        interval=180000,  # in milliseconds (30 seconds) - reduced frequency from previous implementation
         n_intervals=0
     )
 ])
@@ -53,47 +53,16 @@ def get_data(flight_no, flight_date, origin, destination, product_type):
         if not pyodbc:
             raise ImportError("pyodbc is not available")
 
-        # Get connection details from environment variables if available, otherwise use defaults
-        server = os.environ.get('SQL_SERVER', 'qidtestingindia.database.windows.net')
-        database = os.environ.get('SQL_DATABASE', 'rm-demo-erp-db')
-        username = os.environ.get('SQL_USERNAME', 'rmdemodeploymentuser')
-        password = os.environ.get('SQL_PASSWORD', 'rm#demo#2515')
-        
-        # Try different ODBC drivers
-        drivers = [
-            '{ODBC Driver 18 for SQL Server}',
-            '{ODBC Driver 17 for SQL Server}',
-            '{SQL Server}',
-            '{FreeTDS}'
-        ]
-        
-        conn = None
-        last_error = None
-        
-        for driver in drivers:
-            try:
-                conn_str = (
-                    f'DRIVER={driver};'
-                    f'SERVER={server};'
-                    f'DATABASE={database};'
-                    f'UID={username};'
-                    f'PWD={password};'
-                    f'Encrypt=yes;'
-                    f'TrustServerCertificate=no;'
-                    f'Connection Timeout=30;'
-                )
-                
-                print(f"Trying connection with driver: {driver}")
-                conn = pyodbc.connect(conn_str)
-                print(f"Connection successful with driver: {driver}")
-                break
-            except Exception as e:
-                last_error = e
-                print(f"Connection failed with driver {driver}: {e}")
-        
-        if conn is None:
-            raise Exception(f"All connection attempts failed. Last error: {last_error}")
-
+        conn = pyodbc.connect(
+            'DRIVER={ODBC Driver 17 for SQL Server};'
+            'SERVER=qidtestingindia.database.windows.net;'
+            'DATABASE=rm-demo-erp-db;'
+            'UID=rmdemodeploymentuser;'
+            'PWD=rm#demo#2515;'
+            'Encrypt=yes;'
+            'TrustServerCertificate=no;'
+            'Connection Timeout=30;'
+        )
         cursor = conn.cursor()
 
         # Convert flight_date to datetime if it's a string
@@ -184,7 +153,25 @@ def update_data():
         print(f"Error processing data: {e}")
         return jsonify({"status": "error", "message": str(e)}), 400
 
-# Callback to update the dynamic hurdle rate graph
+# Callback to update the display of flight information
+@callback(
+    [Output("display-flight-number", "children"),
+     Output("display-flight-date", "children"),
+     Output("display-origin", "children"),
+     Output("display-destination", "children"),
+     Output("display-product-type", "children")],
+    [Input("interval-component", "n_intervals")]
+)
+def update_flight_info(n_intervals):
+    return (
+        current_flight_data["flight_no"],
+        current_flight_data["flight_date"],
+        current_flight_data["flight_origin"],
+        current_flight_data["flight_destination"],
+        current_flight_data["product_type"]
+    )
+
+# Callback to update the graph based on stored flight data
 @callback(
     Output("dynamic-hurdle-graph", "figure"),
     [Input("interval-component", "n_intervals")]
@@ -290,6 +277,5 @@ def update_output(n_intervals):
 
     return fig
 
-# For local development
 if __name__ == '__main__':
     app.run_server(debug=False, host='0.0.0.0',port=int(os.environ.get('PORT',8050)))
