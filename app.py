@@ -7,6 +7,7 @@ import numpy as np
 from datetime import datetime, timedelta
 from flask import request, jsonify
 import os
+import dash_bootstrap_components as dbc
 
 # Try to import pyodbc, but provide alternative if it fails
 try:
@@ -16,7 +17,10 @@ except ImportError:
     pyodbc = None
 
 # Initialize the Dash app
-app = dash.Dash(__name__, title="Airline Dynamic Hurdle Rate Dashboard", suppress_callback_exceptions=True)
+app = dash.Dash(__name__, 
+                title="Airline Dynamic Hurdle Rate Dashboard", 
+                suppress_callback_exceptions=True,
+                external_stylesheets=[dbc.themes.BOOTSTRAP])
 server = app.server  # Expose Flask server to add custom routes
 
 # Global variables to store the last received data
@@ -28,14 +32,18 @@ current_flight_data = {
     "product_type": ""
 }
 
-# Layout - removed input fields and display fields
+# Layout - removed input fields and display fields, full viewport layout
 app.layout = html.Div([
-    dcc.Loading(id="loading-output", type="circle", children=[
-        html.Div([
-            html.H3("Dynamic Hurdle Rate", style={"textAlign": "center"}),
-            dcc.Graph(id="dynamic-hurdle-graph"),
-        ])
-    ]),
+    # Graph container with responsive layout
+    html.Div(
+        id="graph-container",
+        style={
+            "width": "100%", 
+            "height": "100vh",  # Use viewport height
+            "padding": "0px",   # Remove padding
+            "margin": "0px"     # Remove margin
+        }
+    ),
     
     # Hidden div to store the flight data from the .NET application
     html.Div(id="flight-data-store", style={"display": "none"}),
@@ -46,7 +54,13 @@ app.layout = html.Div([
         interval=1200000,  
         n_intervals=0
     )
-])
+], style={
+    "width": "100%",
+    "height": "100vh",  # Use full viewport height
+    "padding": "0px",   # Remove padding
+    "margin": "0px",    # Remove margin
+    "overflow": "hidden" # Prevent scrollbars
+})
 
 def get_data(flight_no, flight_date, origin, destination, product_type):
     try:
@@ -189,11 +203,9 @@ def reset_data():
         print(f"Error resetting data: {e}")
         return jsonify({"status": "error", "message": str(e)}), 400
 
-# Removed the display callback since we no longer show flight information
-
 # Callback to update the graph based on stored flight data
 @callback(
-    Output("dynamic-hurdle-graph", "figure"),
+    Output("graph-container", "children"),
     [Input("interval-component", "n_intervals")]
 )
 def update_output(n_intervals):
@@ -205,39 +217,71 @@ def update_output(n_intervals):
     product_type = current_flight_data["product_type"]
     
     if not all([flight_no, flight_date, origin, destination, product_type]):
-        empty_fig = go.Figure()
-        empty_fig.update_layout(
-            xaxis={"visible": False},
-            yaxis={"visible": False},
-            annotations=[{"text": "Waiting for flight data...", "showarrow": False, "font": {"size": 16}}]
+        empty_div = html.Div(
+            "Waiting for flight data...", 
+            style={
+                "display": "flex",
+                "justifyContent": "center",
+                "alignItems": "center",
+                "height": "100%",
+                "fontSize": "16px"
+            }
         )
-        return empty_fig
+        return empty_div
 
     static_rate, dynamic_df, awb_data = get_data(flight_no, flight_date, origin, destination, product_type)
 
     if dynamic_df.empty:
-        empty_fig = go.Figure()
-        empty_fig.update_layout(
-            xaxis={"visible": False},
-            yaxis={"visible": False},
-            annotations=[{"text": "No dynamic hurdle rate data found for the given parameters.", "showarrow": False, "font": {"size": 16}}]
+        empty_div = html.Div(
+            "No dynamic hurdle rate data found for the given parameters.", 
+            style={
+                "display": "flex",
+                "justifyContent": "center",
+                "alignItems": "center",
+                "height": "100%",
+                "fontSize": "16px"
+            }
         )
-        return empty_fig
+        return empty_div
 
     # Convert dates to datetime if they're not already
     dynamic_df['Date'] = pd.to_datetime(dynamic_df['Date'])
     dynamic_df['FormattedDate'] = dynamic_df['Date'].dt.strftime('%d %b').str.upper()
     
     # Create the figure with the dynamic hurdle rate line
-    fig = px.line(dynamic_df, x='FormattedDate', y='Dynamic_Hurdle_Rate', markers=True)
-    fig.update_traces(line=dict(color='green'))
+    fig = go.Figure()
+    
+    # Add the dynamic hurdle rate line
+    fig.add_trace(go.Scatter(
+        x=dynamic_df['FormattedDate'],
+        y=dynamic_df['Dynamic_Hurdle_Rate'],
+        mode='lines+markers',
+        name='Dynamic Hurdle Rate',
+        line=dict(color='green')
+    ))
 
     # Add the static hurdle rate line if available
     if static_rate:
-        fig.add_shape(type="line", x0=0, x1=1, xref="paper", y0=static_rate, y1=static_rate,
-                      line=dict(color="red", dash="dash"))
-        fig.add_annotation(x=1, xref="paper", y=static_rate, text=f"Static Rate: {static_rate:.2f} Rs",
-                           showarrow=True, ax=50, ay=-30)
+        fig.add_shape(
+            type="line",
+            x0=0,
+            x1=1,
+            xref="paper",
+            y0=static_rate,
+            y1=static_rate,
+            line=dict(color="red", dash="dash")
+        )
+        
+        # Add annotation for static rate
+        fig.add_annotation(
+            x=1,
+            xref="paper",
+            y=static_rate,
+            text=f"Static Rate: {static_rate:.2f} Rs",
+            showarrow=True,
+            ax=50,
+            ay=-30
+        )
 
     # Add AWB rate points if data is available
     if not awb_data.empty:
@@ -286,16 +330,42 @@ def update_output(n_intervals):
                 yaxis=dict(range=[0, max(max_dynamic_rate, static_rate or 0, max_actual_rate or 0) * 1.1])
             )
 
-    # Update layout
+    # Update layout to match capacity dashboard style
     fig.update_layout(
-        xaxis_title="Dates",
-        yaxis_title="Rate (₹)",
+        title=dict(
+            text='Dynamic Hurdle Rate',
+            x=0.5,  # Center title
+            y=0.98  # Position near top
+        ),
+        xaxis_title='Dates',
+        yaxis_title='Rate (₹)',
         hovermode="x unified",
-        margin=dict(t=30, b=50, l=50, r=50),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        legend=dict(
+            x=1.05,        # Just outside the right side
+            y=1,           # Align to top
+            xanchor='left',
+            yanchor='top',
+            bgcolor='rgba(255,255,255,0.8)',  # Semi-transparent background
+            bordercolor='black',
+            borderwidth=1
+        ),
+        template='plotly_white',  # White background like the capacity dashboard
+        margin=dict(l=50, r=100, t=60, b=50),  # Reduced margins
+        autosize=True,    # Enable autosize for responsiveness
+        height=None,      # Let height be determined by container
     )
 
-    return fig
+    return dcc.Graph(
+        figure=fig,
+        style={
+            'height': '100%',  # Take full height of parent container
+            'width': '100%'    # Take full width of parent container
+        },
+        config={
+            'responsive': True,  # Enable responsiveness
+            'displayModeBar': False  # Hide the mode bar for cleaner appearance
+        }
+    )
 
 if __name__ == '__main__':
     app.run_server(debug=False, host='0.0.0.0',port=int(os.environ.get('PORT',8050)))
