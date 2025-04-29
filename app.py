@@ -34,15 +34,22 @@ current_flight_data = {
 
 # Layout - removed input fields and display fields, full viewport layout
 app.layout = html.Div([
-    # Graph container with responsive layout
-    html.Div(
-        id="graph-container",
-        style={
-            "width": "100%", 
-            "height": "100vh",  # Use viewport height
-            "padding": "0px",   # Remove padding
-            "margin": "0px"     # Remove margin
-        }
+    # Graph container with responsive layout and loading overlay
+    dcc.Loading(
+        id="loading-graph",
+        type="circle",
+        color="#119DFF",
+        children=[
+            html.Div(
+                id="graph-container",
+                style={
+                    "width": "100%", 
+                    "height": "100vh",  # Use viewport height
+                    "padding": "0px",   # Remove padding
+                    "margin": "0px"     # Remove margin
+                }
+            )
+        ]
     ),
     
     # Hidden div to store the flight data from the .NET application
