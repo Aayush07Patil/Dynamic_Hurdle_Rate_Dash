@@ -116,7 +116,7 @@ def get_data(flight_no, flight_date, origin, destination, product_type):
             LEFT JOIN dbo.AWBProrateLog AP ON ARM.AWBPrefix = AP.AWBPrefix AND ARM.AWBNumber = AP.AWBNumber
                 AND ARM.FltOrigin = AP.FlightOrigin AND ARM.FltDestination = AP.FlightDestination
             LEFT JOIN dbo.ProductTypeMaster PM ON AT.ProductType = PM.SerialNumber
-            WHERE ARM.FltNumber = ? AND ARM.FltOrigin = ? AND ARM.FltDestination = ? AND > ARM.FltDate >= '2024'
+            WHERE ARM.FltNumber = ? AND ARM.FltOrigin = ? AND ARM.FltDestination = ?
         """, (flight_no, origin, destination))
 
         awb_data = pd.DataFrame.from_records(cursor.fetchall(), columns=[col[0] for col in cursor.description])
