@@ -1,5 +1,5 @@
 import dash
-from dash import dcc, html, Input, Output, State, callback
+from dash import dcc, html, Input, Output, callback
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
@@ -28,7 +28,7 @@ current_flight_data = {
     "product_type": ""
 }
 
-# Layout - removed input fields, added display fields for received data
+# Layout - removed input fields and display fields
 app.layout = html.Div([
     dcc.Loading(id="loading-output", type="circle", children=[
         html.Div([
@@ -53,16 +53,29 @@ def get_data(flight_no, flight_date, origin, destination, product_type):
         if not pyodbc:
             raise ImportError("pyodbc is not available")
 
-        conn = pyodbc.connect(
-            'DRIVER={ODBC Driver 17 for SQL Server};'
-            'SERVER=qidtestingindia.database.windows.net;'
-            'DATABASE=rm-demo-erp-db;'
-            'UID=rmdemodeploymentuser;'
-            'PWD=rm#demo#2515;'
-            'Encrypt=yes;'
-            'TrustServerCertificate=no;'
-            'Connection Timeout=30;'
+        # Get database connection details from environment variables
+        db_server = os.environ.get('DB_SERVER', '')
+        db_name = os.environ.get('DB_NAME', '')
+        db_user = os.environ.get('DB_USER', '')
+        db_password = os.environ.get('DB_PASSWORD', '')
+        
+        # Check if we have all the required connection details
+        if not all([db_server, db_name, db_user, db_password]):
+            print("Missing database connection details. Using sample data instead...")
+            raise Exception("Missing database connection details")
+
+        conn_str = (
+            f'DRIVER={{ODBC Driver 17 for SQL Server}};'
+            f'SERVER={db_server};'
+            f'DATABASE={db_name};'
+            f'UID={db_user};'
+            f'PWD={db_password};'
+            f'Encrypt=yes;'
+            f'TrustServerCertificate=no;'
+            f'Connection Timeout=30;'
         )
+        
+        conn = pyodbc.connect(conn_str)
         cursor = conn.cursor()
 
         # Convert flight_date to datetime if it's a string
@@ -153,23 +166,30 @@ def update_data():
         print(f"Error processing data: {e}")
         return jsonify({"status": "error", "message": str(e)}), 400
 
-# Callback to update the display of flight information
-@callback(
-    [Output("display-flight-number", "children"),
-     Output("display-flight-date", "children"),
-     Output("display-origin", "children"),
-     Output("display-destination", "children"),
-     Output("display-product-type", "children")],
-    [Input("interval-component", "n_intervals")]
-)
-def update_flight_info(n_intervals):
-    return (
-        current_flight_data["flight_no"],
-        current_flight_data["flight_date"],
-        current_flight_data["flight_origin"],
-        current_flight_data["flight_destination"],
-        current_flight_data["product_type"]
-    )
+# New API endpoint to reset data
+@server.route('/reset-data', methods=['POST'])
+def reset_data():
+    global current_flight_data
+    
+    try:
+        # Reset the current flight data to empty values
+        current_flight_data = {
+            "flight_no": "",
+            "flight_date": datetime.now().date().isoformat(),
+            "flight_origin": "",
+            "flight_destination": "",
+            "product_type": ""
+        }
+        
+        print("Dashboard data reset successfully")
+        
+        return jsonify({"status": "success", "message": "Data reset successfully"}), 200
+    
+    except Exception as e:
+        print(f"Error resetting data: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+# Removed the display callback since we no longer show flight information
 
 # Callback to update the graph based on stored flight data
 @callback(
