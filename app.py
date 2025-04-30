@@ -175,7 +175,6 @@ def get_data(flight_no, flight_date, origin, destination, product_type, cancel_e
         """, (flight_no, origin, destination))
 
         awb_data = pd.DataFrame.from_records(cursor.fetchall(), columns=[col[0] for col in cursor.description])
-        awb_data = awb_data.tail(100)
 
         cursor.close()
         conn.close()
