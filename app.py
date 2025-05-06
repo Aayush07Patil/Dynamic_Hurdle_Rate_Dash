@@ -11,6 +11,7 @@ import dash_bootstrap_components as dbc
 import threading
 import time
 from queue import Queue
+import decimal  # Add decimal import for handling Decimal types
 
 # Try to import pyodbc, but provide alternative if it fails
 try:
@@ -77,6 +78,90 @@ app.layout = html.Div([
     "overflow": "hidden" # Prevent scrollbars
 })
 
+def get_optimized_awb_data(cursor, flight_no, origin, destination, cancel_event):
+    """Get AWB data with an optimized query that performs calculations in SQL directly"""
+    if cancel_event.is_set():
+        return pd.DataFrame()
+
+    try:
+        # Execute optimized query with calculations done in SQL
+        # Using TOP 1000 to limit results for performance while still getting useful data
+        cursor.execute("""
+            SELECT TOP 1000
+                ARM.[AWBPrefix], 
+                ARM.[AWBNumber],
+                ARM.[FltDate],
+                AT.[AWBDate],
+                DATEDIFF(day, AT.[AWBDate], ARM.[FltDate]) as DOD,
+                CAST(
+                    CASE 
+                        WHEN AR.[RateClass] IN ('M', 'F') THEN 
+                            CASE 
+                                WHEN AR.[SpotRate] IS NULL OR AR.[SpotRate] = 0 THEN ROUND(AR.[RatePerKg] / NULLIF(AR.[ChargedWeight], 0), 2)
+                                ELSE ROUND(AR.[SpotRate] / NULLIF(AR.[ChargedWeight], 0), 2)
+                            END
+                        ELSE 
+                            CASE 
+                                WHEN AR.[SpotRate] IS NULL OR AR.[SpotRate] = 0 THEN ROUND(AR.[RatePerKg], 2)
+                                ELSE ROUND(AR.[SpotRate], 2)
+                            END
+                    END AS FLOAT) as Rate
+            FROM dbo.AWBRouteMaster ARM WITH (NOLOCK)
+            LEFT JOIN dbo.AWBSummaryMaster AT WITH (NOLOCK)
+                ON ARM.AWBPrefix = AT.AWBPrefix AND ARM.AWBNumber = AT.AWBNumber
+            LEFT JOIN dbo.AWBRateMaster AR WITH (NOLOCK)
+                ON ARM.AWBPrefix = AR.AWBPrefix AND ARM.AWBNumber = AR.AWBNumber
+            WHERE ARM.FltNumber = ? 
+              AND ARM.FltOrigin = ? 
+              AND ARM.FltDestination = ?
+              AND DATEDIFF(day, AT.[AWBDate], ARM.[FltDate]) BETWEEN 0 AND 15
+              AND (
+                  CASE 
+                    WHEN AR.[RateClass] IN ('M', 'F') THEN 
+                        CASE 
+                            WHEN AR.[SpotRate] IS NULL OR AR.[SpotRate] = 0 THEN AR.[RatePerKg] / NULLIF(AR.[ChargedWeight], 0)
+                            ELSE AR.[SpotRate] / NULLIF(AR.[ChargedWeight], 0)
+                        END
+                    ELSE 
+                        CASE 
+                            WHEN AR.[SpotRate] IS NULL OR AR.[SpotRate] = 0 THEN AR.[RatePerKg]
+                            ELSE AR.[SpotRate]
+                        END
+                  END
+              ) > 0
+              AND (
+                  CASE 
+                    WHEN AR.[RateClass] IN ('M', 'F') THEN 
+                        CASE 
+                            WHEN AR.[SpotRate] IS NULL OR AR.[SpotRate] = 0 THEN AR.[RatePerKg] / NULLIF(AR.[ChargedWeight], 0)
+                            ELSE AR.[SpotRate] / NULLIF(AR.[ChargedWeight], 0)
+                        END
+                    ELSE 
+                        CASE 
+                            WHEN AR.[SpotRate] IS NULL OR AR.[SpotRate] = 0 THEN AR.[RatePerKg]
+                            ELSE AR.[SpotRate]
+                        END
+                  END
+              ) < 300
+            ORDER BY ARM.[FltDate] DESC
+        """, (flight_no, origin, destination))
+        
+        # Define columns based on what we're selecting
+        columns = ['AWBPrefix', 'AWBNumber', 'FltDate', 'AWBDate', 'DOD', 'Rate']
+        
+        # Convert to DataFrame - we're only getting what we need
+        df = pd.DataFrame.from_records(cursor.fetchall(), columns=columns)
+        
+        # Ensure Rate is float type
+        if 'Rate' in df.columns and not df.empty:
+            df['Rate'] = df['Rate'].astype(float)
+            
+        return df
+    
+    except Exception as e:
+        print(f"Error in optimized AWB data query: {e}")
+        return pd.DataFrame()
+
 def get_data(flight_no, flight_date, origin, destination, product_type, cancel_event):
     # Check for cancellation at the start
     if cancel_event.is_set():
@@ -130,12 +215,17 @@ def get_data(flight_no, flight_date, origin, destination, product_type, cancel_e
             conn.close()
             return None, None, None
 
+        # Query 1: Get static hurdle rate (fast, simple query)
         cursor.execute("""
-            SELECT HurdleRate FROM dbo.AirlineHurdleRate
+            SELECT CAST(HurdleRate AS FLOAT) FROM dbo.AirlineHurdleRate WITH (NOLOCK)
             WHERE FlightOrigin = ? AND FlightDestination = ?
         """, (origin, destination))
         static_result = cursor.fetchone()
         static_hurdle_rate = static_result[0] if static_result else None
+
+        # Ensure static_hurdle_rate is float
+        if isinstance(static_hurdle_rate, decimal.Decimal):
+            static_hurdle_rate = float(static_hurdle_rate)
 
         # Check for cancellation before second query
         if cancel_event.is_set():
@@ -143,8 +233,10 @@ def get_data(flight_no, flight_date, origin, destination, product_type, cancel_e
             conn.close()
             return None, None, None
 
+        # Query 2: Get dynamic hurdle rate data (also relatively simple)
         cursor.execute("""
-            SELECT Date, Dynamic_Hurdle_Rate FROM dbo.AirlineDynamicHurdleRate
+            SELECT Date, CAST(Dynamic_Hurdle_Rate AS FLOAT) as Dynamic_Hurdle_Rate 
+            FROM dbo.AirlineDynamicHurdleRate WITH (NOLOCK)
             WHERE FlightID = ? AND Departure_Date = ? AND FltOrigin = ? AND FltDestination = ? AND ProductType = ?
             ORDER BY Date
         """, (flight_no, formatted_date, origin, destination, product_type))
@@ -152,7 +244,10 @@ def get_data(flight_no, flight_date, origin, destination, product_type, cancel_e
         dynamic_rows = cursor.fetchall()
         columns = ['Date', 'Dynamic_Hurdle_Rate']
         dynamic_df = pd.DataFrame.from_records(dynamic_rows, columns=columns)
-        dynamic_df['Dynamic_Hurdle_Rate'] = dynamic_df['Dynamic_Hurdle_Rate'].astype(float)
+        
+        # Ensure Dynamic_Hurdle_Rate is float
+        if 'Dynamic_Hurdle_Rate' in dynamic_df.columns and not dynamic_df.empty:
+            dynamic_df['Dynamic_Hurdle_Rate'] = dynamic_df['Dynamic_Hurdle_Rate'].astype(float)
 
         # Check for cancellation before third query
         if cancel_event.is_set():
@@ -160,21 +255,8 @@ def get_data(flight_no, flight_date, origin, destination, product_type, cancel_e
             conn.close()
             return None, None, None
 
-        cursor.execute("""
-            SELECT ARM.[AWBID],ARM.[AWBPrefix],ARM.[AWBNumber],ARM.[FltNumber],ARM.[FltDate],ARM.[FltOrigin],ARM.[FltDestination],
-            ARM.[Wt],ARM.[UOM],ARM.[allotmentcode],ARM.[Volume],ARM.[VolumeUnit],AT.[AWBDate],AT.[SHCCodes],
-            AR.[SpotRate],AR.[RatePerKg],AR.[ChargedWeight],AR.[RateClass],AP.[AppliedPercentageDisplay],
-            PM.[ProductType] 
-            FROM dbo.AWBRouteMaster ARM
-            LEFT JOIN dbo.AWBSummaryMaster AT ON ARM.AWBPrefix = AT.AWBPrefix AND ARM.AWBNumber = AT.AWBNumber
-            LEFT JOIN dbo.AWBRateMaster AR ON ARM.AWBPrefix = AR.AWBPrefix AND ARM.AWBNumber = AR.AWBNumber
-            LEFT JOIN dbo.AWBProrateLog AP ON ARM.AWBPrefix = AP.AWBPrefix AND ARM.AWBNumber = AP.AWBNumber
-                AND ARM.FltOrigin = AP.FlightOrigin AND ARM.FltDestination = AP.FlightDestination
-            LEFT JOIN dbo.ProductTypeMaster PM ON AT.ProductType = PM.SerialNumber
-            WHERE ARM.FltNumber = ? AND ARM.FltOrigin = ? AND ARM.FltDestination = ?
-        """, (flight_no, origin, destination))
-
-        awb_data = pd.DataFrame.from_records(cursor.fetchall(), columns=[col[0] for col in cursor.description])
+        # Query 3: Get AWB data using our optimized function
+        awb_data = get_optimized_awb_data(cursor, flight_no, origin, destination, cancel_event)
 
         cursor.close()
         conn.close()
@@ -427,7 +509,7 @@ def update_output(n_intervals):
 
         # Add AWB rate points if data is available
         if not awb_data.empty:
-            # Process AWB data
+            # Process AWB data - should be much simpler now
             df = awb_data.copy()
             
             # Convert date columns to datetime if they're not already
@@ -435,47 +517,35 @@ def update_output(n_intervals):
                 if col in df.columns and not pd.api.types.is_datetime64_any_dtype(df[col]):
                     df[col] = pd.to_datetime(df[col], errors='coerce')
             
-            # Calculate days of departure
-            if 'FltDate' in df.columns and 'AWBDate' in df.columns:
-                df['DOD'] = (df['FltDate'] - df['AWBDate']).dt.days
-                df = df[(df['DOD'] >= 0) & (df['DOD'] <= 15)]
-                
-                # Calculate rate
-                df['Rate'] = np.where((df['SpotRate'].isna()) | (df['SpotRate'] == 0), df['RatePerKg'], df['SpotRate'])
-                df['Rate'] = np.where(df['RateClass'].isin(['M', 'F']), df['Rate'] / df['ChargedWeight'], df['Rate'])
-                df = df[df['Rate'] != 0]
-                df = df[df['Rate'] < 300]
-                df['Rate'] = df['Rate'].astype(float).round(2)
+            # Map DOD to formatted dates
+            formatted_map = dynamic_df.sort_values('Date')['FormattedDate'].tolist()
+            max_idx = len(formatted_map) - 1
+            dod_to_date = {dod: formatted_map[max_idx - dod] for dod in range(16) if max_idx - dod >= 0}
 
-                # Map dates
-                formatted_map = dynamic_df.sort_values('Date')['FormattedDate'].tolist()
-                max_idx = len(formatted_map) - 1
-                dod_to_date = {dod: formatted_map[max_idx - dod] for dod in range(16) if max_idx - dod >= 0}
-
-                df['FormattedDate'] = df['DOD'].map(dod_to_date)
-                df = df.dropna(subset=['FormattedDate'])
-                
-                # Check for cancellation before adding scatter points
-                if operation_canceled.is_set():
-                    current_operation = None
-                    return no_update
-                
-                # Add scatter points for AWB rates
-                fig.add_trace(go.Scatter(
-                    x=df['FormattedDate'], 
-                    y=df['Rate'], 
-                    mode='markers', 
-                    name='AWB Rate',
-                    marker=dict(color='blue', size=8),
-                    hovertext=df.apply(lambda row: f"AWB: {row['AWBPrefix']}-{row['AWBNumber']}<br>Rate: {row['Rate']} Rs", axis=1)
-                ))
-                
-                # Update y-axis range
-                max_dynamic_rate = dynamic_df['Dynamic_Hurdle_Rate'].max()
-                max_actual_rate = df['Rate'].max()
-                fig.update_layout(
-                    yaxis=dict(range=[0, max(max_dynamic_rate, static_rate or 0, max_actual_rate or 0) * 1.1])
-                )
+            df['FormattedDate'] = df['DOD'].map(dod_to_date)
+            df = df.dropna(subset=['FormattedDate'])
+            
+            # Check for cancellation before adding scatter points
+            if operation_canceled.is_set():
+                current_operation = None
+                return no_update
+            
+            # Add scatter points for AWB rates
+            fig.add_trace(go.Scatter(
+                x=df['FormattedDate'], 
+                y=df['Rate'], 
+                mode='markers', 
+                name='AWB Rate',
+                marker=dict(color='blue', size=8),
+                hovertext=df.apply(lambda row: f"AWB: {row['AWBPrefix']}-{row['AWBNumber']}<br>Rate: {row['Rate']:.2f} Rs", axis=1)
+            ))
+            
+            # Update y-axis range
+            max_dynamic_rate = dynamic_df['Dynamic_Hurdle_Rate'].max()
+            max_actual_rate = df['Rate'].max()
+            fig.update_layout(
+                yaxis=dict(range=[0, max(max_dynamic_rate, static_rate or 0, max_actual_rate or 0) * 1.1])
+            )
 
         # Check for cancellation before finalizing layout
         if operation_canceled.is_set():
@@ -541,3 +611,4 @@ def update_output(n_intervals):
 
 if __name__ == '__main__':
     app.run_server(debug=False, host='0.0.0.0',port=int(os.environ.get('PORT',8050)))
+    #app.run(debug=False)
