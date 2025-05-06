@@ -470,7 +470,7 @@ def update_output(n_intervals):
             x=dynamic_df['FormattedDate'],
             y=dynamic_df['Dynamic_Hurdle_Rate'],
             mode='lines+markers',
-            name='Dynamic Hurdle Rate',
+            name='Dynamic Rate',
             line=dict(color='green')
         ))
 
