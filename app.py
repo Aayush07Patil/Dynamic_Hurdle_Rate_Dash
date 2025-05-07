@@ -12,6 +12,7 @@ import threading
 import time
 from queue import Queue
 import decimal  # Add decimal import for handling Decimal types
+import traceback
 
 # Try to import pyodbc, but provide alternative if it fails
 try:
@@ -43,6 +44,9 @@ request_queue = Queue(maxsize=1)  # Only keep the most recent request
 
 # Layout - removed input fields and display fields, full viewport layout
 app.layout = html.Div([
+    # Store component to store the flight data
+    dcc.Store(id='flight-data-store'),
+    
     # Graph container with responsive layout and loading overlay
     dcc.Loading(
         id="loading-graph",
@@ -61,15 +65,18 @@ app.layout = html.Div([
         ]
     ),
     
-    # Hidden div to store the flight data from the .NET application
-    html.Div(id="flight-data-store", style={"display": "none"}),
-    
     # Add interval component to trigger updates
     dcc.Interval(
         id='interval-component',
         interval=1200000,  
         n_intervals=0
-    )
+    ),
+    
+    # Location component to track URL
+    dcc.Location(id='url', refresh=False),
+    
+    # Hidden div to trigger callback on page load
+    html.Div(id='page-load-trigger', style={'display': 'none'})
 ], style={
     "width": "100%",
     "height": "100vh",  # Use full viewport height
@@ -77,6 +84,74 @@ app.layout = html.Div([
     "margin": "0px",    # Remove margin
     "overflow": "hidden" # Prevent scrollbars
 })
+
+# Initialize Flask routes BEFORE Dash callbacks
+@server.before_request
+def before_request_func():
+    # Process query parameters on every request
+    query_params = request.args
+    if query_params:
+        # Debug log
+        print(f"INTERCEPTED QUERY PARAMS: {query_params}")
+        
+        # Update the global variable
+        global current_flight_data, current_operation, operation_canceled
+        
+        # Cancel any in-progress operation
+        if current_operation is not None:
+            operation_canceled.set()
+            # Add a small delay to ensure cancellation takes effect
+            time.sleep(0.1)
+            
+        # Reset the cancellation flag
+        operation_canceled.clear()
+        
+        # Check if we're resetting the dashboard
+        if query_params.get('reset') == 'true':
+            print("Resetting dashboard data via query parameter")
+            current_flight_data = {
+                "flight_no": "",
+                "flight_date": datetime.now().date().isoformat(),
+                "flight_origin": "",
+                "flight_destination": "",
+                "product_type": ""
+            }
+        # Check if we have flight parameters
+        elif all(param in query_params for param in ['flight_no', 'flight_date']):
+            print("Updating dashboard data via query parameters")
+            current_flight_data = {
+                "flight_no": query_params.get('flight_no', ''),
+                "flight_date": query_params.get('flight_date', datetime.now().date().isoformat()),
+                "flight_origin": query_params.get('flight_origin', ''),
+                "flight_destination": query_params.get('flight_destination', ''),
+                "product_type": query_params.get('product_type', '')
+            }
+            print(f"Updated flight data to: {current_flight_data}")
+        
+        # Force a refresh of the graph by putting a new request in the queue
+        # Clear the queue first to remove any stale requests
+        while not request_queue.empty():
+            try:
+                request_queue.get_nowait()
+            except:
+                pass
+        
+        # Add new request
+        try:
+            request_queue.put_nowait(1)  # Just a signal, value doesn't matter
+        except:
+            pass
+
+# Callback to update the store on URL change
+@app.callback(
+    Output('flight-data-store', 'data'),
+    [Input('url', 'pathname'),
+     Input('url', 'search'),
+     Input('interval-component', 'n_intervals')]
+)
+def update_store(pathname, search, n_intervals):
+    # Return the current flight data from the global variable
+    return current_flight_data
 
 def get_optimized_awb_data(cursor, flight_no, origin, destination, cancel_event):
     """Get AWB data with an optimized query that performs calculations in SQL directly"""
@@ -286,6 +361,8 @@ def get_data(flight_no, flight_date, origin, destination, product_type, cancel_e
 
         return static_hurdle_rate, dynamic_df, awb_data
 
+# KEEP THE ORIGINAL POST ENDPOINTS FOR BACKWARD COMPATIBILITY
+
 # API endpoint to receive data from .NET application
 @server.route('/update-data', methods=['POST'])
 def update_data():
@@ -313,7 +390,7 @@ def update_data():
             "product_type": data.get("product_type", "")
         }
         
-        print(f"Received data: {current_flight_data}")
+        print(f"Received data via POST: {current_flight_data}")
         
         # Force a refresh of the graph by putting a new request in the queue
         # Clear the queue first to remove any stale requests
@@ -332,10 +409,10 @@ def update_data():
         return jsonify({"status": "success", "message": "Data received successfully"}), 200
     
     except Exception as e:
-        print(f"Error processing data: {e}")
+        print(f"Error processing POST data: {e}")
         return jsonify({"status": "error", "message": str(e)}), 400
 
-# New API endpoint to reset data
+# API endpoint to reset data
 @server.route('/reset-data', methods=['POST'])
 def reset_data():
     global current_flight_data, current_operation, operation_canceled
@@ -359,7 +436,7 @@ def reset_data():
             "product_type": ""
         }
         
-        print("Dashboard data reset successfully")
+        print("Dashboard data reset via POST")
         
         # Force a refresh of the graph
         while not request_queue.empty():
@@ -376,15 +453,16 @@ def reset_data():
         return jsonify({"status": "success", "message": "Data reset successfully"}), 200
     
     except Exception as e:
-        print(f"Error resetting data: {e}")
+        print(f"Error resetting data via POST: {e}")
         return jsonify({"status": "error", "message": str(e)}), 400
 
 # Callback to update the graph based on stored flight data
-@callback(
+@app.callback(
     Output("graph-container", "children"),
-    [Input("interval-component", "n_intervals")]
+    [Input("flight-data-store", "data"),
+     Input("interval-component", "n_intervals")]
 )
-def update_output(n_intervals):
+def update_output(flight_data, n_intervals):
     global current_operation, operation_canceled
     
     # Process the latest request from the queue
@@ -404,11 +482,22 @@ def update_output(n_intervals):
         operation_canceled.clear()
         
         # Get the current flight data
-        flight_no = current_flight_data["flight_no"]
-        flight_date = current_flight_data["flight_date"]
-        origin = current_flight_data["flight_origin"]
-        destination = current_flight_data["flight_destination"]
-        product_type = current_flight_data["product_type"]
+        if flight_data:
+            flight_no = flight_data.get("flight_no", "")
+            flight_date = flight_data.get("flight_date", "")
+            origin = flight_data.get("flight_origin", "")
+            destination = flight_data.get("flight_destination", "")
+            product_type = flight_data.get("product_type", "")
+        else:
+            # Fall back to global variable
+            flight_no = current_flight_data["flight_no"]
+            flight_date = current_flight_data["flight_date"]
+            origin = current_flight_data["flight_origin"]
+            destination = current_flight_data["flight_destination"]
+            product_type = current_flight_data["product_type"]
+        
+        # For debugging
+        print(f"Updating hurdle rate graph with: Flight={flight_no}, Date={flight_date}, Origin={origin}, Dest={destination}, Product={product_type}")
         
         if not all([flight_no, flight_date, origin, destination, product_type]):
             current_operation = None  # Clear the current operation
@@ -555,7 +644,7 @@ def update_output(n_intervals):
         # Update layout to match capacity dashboard style
         fig.update_layout(
             title=dict(
-                text='Dynamic Hurdle Rate',
+                text=f'Dynamic Hurdle Rate: {flight_no} {origin}-{destination} ({product_type})',
                 x=0.5,  # Center title
                 y=0.98  # Position near top
             ),
@@ -593,7 +682,11 @@ def update_output(n_intervals):
         )
         
     except Exception as e:
-        print(f"Error updating graph: {e}")
+        # Get full stack trace for debugging
+        stack_trace = traceback.format_exc()
+        print(f"Error: {e}")
+        print(f"Stack trace: {stack_trace}")
+        
         current_operation = None
         
         error_div = html.Div(
@@ -609,6 +702,13 @@ def update_output(n_intervals):
         )
         return error_div
 
+# Add route to handle root path and query parameters
+@server.route('/')
+def index():
+    # This is just to log when the root route is accessed with query parameters
+    if request.args:
+        print(f"Root route accessed with query parameters: {request.args}")
+    return app.index()
+
 if __name__ == '__main__':
-    app.run_server(debug=False, host='0.0.0.0',port=int(os.environ.get('PORT',8050)))
-    #app.run(debug=False)
+    app.run_server(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 8050)))
